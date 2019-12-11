@@ -23,6 +23,7 @@ import collections
 import numpy as np
 
 import tensorflow as tf
+import horovod.tensorflow as hvd
 
 from . import model_helper
 from .utils import iterator_utils
@@ -206,11 +207,21 @@ class BaseModel(object):
       else:
         raise ValueError("Unknown optimizer type %s" % hparams.optimizer)
 
+      # Add Horovod Distributed Optimizer
+      opt = hvd.DistributedOptimizer(opt)
+
       # Gradients
-      gradients = tf.gradients(
+      #gradients = tf.gradients(
+      #    self.train_loss,
+      #    params,
+      #    colocate_gradients_with_ops=hparams.colocate_gradients_with_ops)
+
+      # Horovod compute_gradients
+      # Allreduce the gradients before returning them
+      gradients, variables = zip(*opt.compute_gradients(
           self.train_loss,
           params,
-          colocate_gradients_with_ops=hparams.colocate_gradients_with_ops)
+          colocate_gradients_with_ops=hparams.colocate_gradients_with_ops))
 
       clipped_grads, grad_norm_summary, grad_norm = model_helper.gradient_clip(
           gradients, max_gradient_norm=hparams.max_gradient_norm)
@@ -394,9 +405,13 @@ class BaseModel(object):
 
       ## Loss
       if self.mode != tf.contrib.learn.ModeKeys.INFER:
-        with tf.device(model_helper.get_device_str(self.num_encoder_layers - 1,
-                                                   self.num_gpus)):
-          loss = self._compute_loss(logits, decoder_cell_outputs)
+      #  with tf.device(model_helper.get_device_str(self.num_encoder_layers - 1,
+      #                                             self.num_gpus)):
+      #    loss = self._compute_loss(logits, decoder_cell_outputs)
+    
+      # Horovod
+        loss = self._compute_loss(logits, decoder_cell_outputs)
+
       else:
         loss = tf.constant(0.0)
 

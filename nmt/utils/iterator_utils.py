@@ -18,6 +18,8 @@ from __future__ import print_function
 import collections
 
 import tensorflow as tf
+# Horovod
+import horovod.tensorflow as hvd
 
 from ..utils import vocab_utils
 
@@ -129,6 +131,16 @@ def get_iterator(src_dataset,
   src_tgt_dataset = src_tgt_dataset.shard(num_shards, shard_index)
   if skip_count is not None:
     src_tgt_dataset = src_tgt_dataset.skip(skip_count)
+
+  # Horovod
+  num_shards = hvd.size()
+  shard_index = hvd.rank()
+
+  if num_shards > 1:
+    if not random_seed:
+      random_seed = 1
+
+  print("# num_shards = {} and shard_index = {}".format(num_shards, shard_index))
 
   src_tgt_dataset = src_tgt_dataset.shuffle(
       output_buffer_size, random_seed, reshuffle_each_iteration)

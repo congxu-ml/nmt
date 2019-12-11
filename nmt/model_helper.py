@@ -115,16 +115,16 @@ def create_train_model(
     # Note: One can set model_device_fn to
     # `tf.train.replica_device_setter(ps_tasks)` for distributed training.
     model_device_fn = None
-    if extra_args: model_device_fn = extra_args.model_device_fn
-    with tf.device(model_device_fn):
-      model = model_creator(
-          hparams,
-          iterator=iterator,
-          mode=tf.contrib.learn.ModeKeys.TRAIN,
-          source_vocab_table=src_vocab_table,
-          target_vocab_table=tgt_vocab_table,
-          scope=scope,
-          extra_args=extra_args)
+    #if extra_args: model_device_fn = extra_args.model_device_fn
+    #with tf.device(model_device_fn):
+    model = model_creator(
+        hparams,
+        iterator=iterator,
+        mode=tf.contrib.learn.ModeKeys.TRAIN,
+        source_vocab_table=src_vocab_table,
+        target_vocab_table=tgt_vocab_table,
+        scope=scope,
+        extra_args=extra_args)
 
   return TrainModel(
       graph=graph,
@@ -236,11 +236,15 @@ def create_infer_model(model_creator, hparams, scope=None, extra_args=None):
 
 def _get_embed_device(vocab_size):
   """Decide on which device to place an embed matrix given its vocab size."""
+  '''
   if vocab_size > VOCAB_SIZE_THRESHOLD_CPU:
     return "/cpu:0"
   else:
     return "/gpu:0"
-
+  '''
+  # Horovod
+  # All device are CPU for Horovod CPU training
+  return "/cpu:0"
 
 def _create_pretrained_emb_from_txt(
     vocab_file, embed_file, num_trainable_tokens=3, dtype=tf.float32,
@@ -269,9 +273,10 @@ def _create_pretrained_emb_from_txt(
   emb_mat = tf.constant(emb_mat)
   emb_mat_const = tf.slice(emb_mat, [num_trainable_tokens, 0], [-1, -1])
   with tf.variable_scope(scope or "pretrain_embeddings", dtype=dtype) as scope:
-    with tf.device(_get_embed_device(num_trainable_tokens)):
-      emb_mat_var = tf.get_variable(
-          "emb_mat_var", [num_trainable_tokens, emb_size])
+    #with tf.device(_get_embed_device(num_trainable_tokens)):
+    # Horovod
+    emb_mat_var = tf.get_variable(
+        "emb_mat_var", [num_trainable_tokens, emb_size])
   return tf.concat([emb_mat_var, emb_mat_const], 0)
 
 
@@ -281,9 +286,10 @@ def _create_or_load_embed(embed_name, vocab_file, embed_file,
   if vocab_file and embed_file:
     embedding = _create_pretrained_emb_from_txt(vocab_file, embed_file)
   else:
-    with tf.device(_get_embed_device(vocab_size)):
-      embedding = tf.get_variable(
-          embed_name, [vocab_size, embed_size], dtype)
+    #with tf.device(_get_embed_device(vocab_size)):
+    # Horovod  
+    embedding = tf.get_variable(
+        embed_name, [vocab_size, embed_size], dtype)
   return embedding
 
 
@@ -545,6 +551,23 @@ def load_model(model, ckpt_path, session, name):
   return model
 
 
+# Horovod
+def horovod_load_model(model, ckpt_path, session, name):
+  """Load model from a checkpoint."""
+  start_time = time.time()
+  try:
+    model.saver.restore(session, ckpt_path)
+  except tf.errors.NotFoundError as e:
+    utils.print_out("Can't load checkpoint")
+    print_variables_in_ckpt(ckpt_path)
+    utils.print_out("%s" % str(e))
+
+  utils.print_out(
+      "  loaded %s model parameters from %s, time %.2fs" %
+      (name, ckpt_path, time.time() - start_time))
+  return model
+
+
 def avg_checkpoints(model_dir, num_last_checkpoints, global_step,
                     global_step_name):
   """Average the last N checkpoints in the model_dir."""
@@ -629,6 +652,17 @@ def create_or_load_model(model, model_dir, session, name):
     session.run(tf.tables_initializer())
     utils.print_out("  created %s model with fresh parameters, time %.2fs" %
                     (name, time.time() - start_time))
+
+  global_step = model.global_step.eval(session=session)
+  return model, global_step
+
+
+# Horovod
+def horovod_create_or_load_model(model, model_dir, session, name):
+  """Create translation model and initialize or load parameters in session."""
+  latest_ckpt = tf.train.latest_checkpoint(model_dir)
+  if latest_ckpt:
+    model = horovod_load_model(model, latest_ckpt, session, name)
 
   global_step = model.global_step.eval(session=session)
   return model, global_step
